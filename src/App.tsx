@@ -1,77 +1,163 @@
-import { useState, type ChangeEvent } from 'react';
-import './App.css';
+import React, { useState, useEffect, useRef } from 'react';
+import { Header } from './components/Header';
+import { Editor } from './components/Editor';
+import { Footer } from './components/Footer';
+import { HistorySidebar } from './components/HistorySidebar';
+import { AnalysisModal } from './components/AnalysisModal';
+import { WritingSession, KeystrokeEvent, PasteEvent } from './types';
 
-interface TextEditorState {
-  text: string;
-  wordCount: number;
-  charCount: number;
-}
+export default function App() {
+  const [content, setContent] = useState('');
+  const [sessions, setSessions] = useState<WritingSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const [analyzingSession, setAnalyzingSession] = useState<WritingSession | null>(null);
+  
+  // Use refs for high-frequency data to avoid unnecessary re-renders
+  const keystrokesRef = useRef<KeystrokeEvent[]>([]);
+  const pastesRef = useRef<PasteEvent[]>([]);
+  const activeKeys = useRef<Map<string, number>>(new Map());
+  const editorRef = useRef<HTMLTextAreaElement>(null);
 
-function App() {
-  const [state, setState] = useState<TextEditorState>({
-    text: '',
-    wordCount: 0,
-    charCount: 0
-  });
+  // Stats for UI
+  const [stats, setStats] = useState({ keys: 0, pastes: 0 });
 
-  const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
-    const newText = e.target.value;
-    setState(prev => ({
-      ...prev,
-      text: newText,
-      wordCount: newText.trim() === '' ? 0 : newText.trim().split(/\s+/).length,
-      charCount: newText.length
-    }));
+  // Load sessions from localStorage on mount
+  useEffect(() => {
+    const saved = localStorage.getItem('vi-notes-sessions');
+    if (saved) {
+      try {
+        setSessions(JSON.parse(saved));
+      } catch (e) {
+        console.error('Failed to parse sessions', e);
+      }
+    }
+  }, []);
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (!activeKeys.current.has(e.code)) {
+      activeKeys.current.set(e.code, Date.now());
+    }
   };
 
-  const clearText = () => {
-    setState({ text: '', wordCount: 0, charCount: 0 });
+  const handleKeyUp = (e: React.KeyboardEvent) => {
+    const downTime = activeKeys.current.get(e.code);
+    if (downTime) {
+      const upTime = Date.now();
+      const duration = upTime - downTime;
+      
+      const isCorrection = e.key === 'Backspace' || e.key === 'Delete';
+      
+      keystrokesRef.current.push({ 
+        down: downTime, 
+        up: upTime, 
+        duration,
+        isCorrection 
+      });
+      activeKeys.current.delete(e.code);
+      
+      setStats(prev => ({ ...prev, keys: keystrokesRef.current.length }));
+    }
   };
 
-  const copyText = async () => {
-    try {
-      await navigator.clipboard.writeText(state.text);
-      const btn = document.querySelector('.btn-copy') as HTMLButtonElement;
-      const originalText = btn.textContent;
-      btn.textContent = 'Copied!';
-      setTimeout(() => {
-        btn.textContent = originalText;
-      }, 1500);
-    } catch (err) {
-      alert('Failed to copy text');
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const pastedText = e.clipboardData.getData('text');
+    const event = { timestamp: Date.now(), length: pastedText.length };
+    pastesRef.current.push(event);
+    setStats(prev => ({ ...prev, pastes: pastesRef.current.length }));
+  };
+
+  const saveSession = () => {
+    if (!content.trim()) return;
+
+    const newSession: WritingSession = {
+      id: currentSessionId || crypto.randomUUID(),
+      title: content.split('\n')[0].substring(0, 30) || 'Untitled Note',
+      content,
+      createdAt: new Date().toISOString(),
+      keystrokes: [...keystrokesRef.current],
+      pastes: [...pastesRef.current]
+    };
+
+    const updatedSessions = [newSession, ...sessions.filter(s => s.id !== newSession.id)];
+    setSessions(updatedSessions);
+    localStorage.setItem('vi-notes-sessions', JSON.stringify(updatedSessions));
+    
+    if (!currentSessionId) {
+      setCurrentSessionId(newSession.id);
+    }
+  };
+
+  const startNewSession = () => {
+    setContent('');
+    setCurrentSessionId(null);
+    keystrokesRef.current = [];
+    pastesRef.current = [];
+    setStats({ keys: 0, pastes: 0 });
+    editorRef.current?.focus();
+  };
+
+  const loadSession = (session: WritingSession) => {
+    setContent(session.content);
+    setCurrentSessionId(session.id);
+    keystrokesRef.current = session.keystrokes || [];
+    pastesRef.current = session.pastes || [];
+    setStats({ 
+      keys: keystrokesRef.current.length, 
+      pastes: pastesRef.current.length 
+    });
+    setShowHistory(false);
+  };
+
+  const deleteSession = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const updated = sessions.filter(s => s.id !== id);
+    setSessions(updated);
+    localStorage.setItem('vi-notes-sessions', JSON.stringify(updated));
+    if (currentSessionId === id) {
+      startNewSession();
     }
   };
 
   return (
-    <div className="app">
-      <header className="header">
-        <h1>✨ Vi Note Text Editor</h1>
-        <div className="stats">
-          <span>{state.wordCount} words</span>
-          <span>{state.charCount} characters</span>
-        </div>
-      </header>
+    <div className="min-h-screen bg-[#FDFDFD] text-[#1A1A1A] font-sans selection:bg-[#E5E5E5]">
+      <Header 
+        onShowHistory={() => setShowHistory(true)}
+        onNewNote={startNewSession}
+        onSave={saveSession}
+        hasSessions={sessions.length > 0}
+        canSave={content.trim().length > 0}
+      />
 
-      <div className="editor-container">
-        <textarea
-          className="editor"
-          value={state.text}
-          onChange={handleChange}
-          placeholder="Start typing here... Fully typed & error-free!"
-          rows={30}
-        />
-      </div>
+      <Editor 
+        content={content}
+        onChange={setContent}
+        onKeyDown={handleKeyDown}
+        onKeyUp={handleKeyUp}
+        onPaste={handlePaste}
+        editorRef={editorRef}
+      />
 
-      <div className="toolbar">
-        <button onClick={clearText} className="btn btn-clear" type="button">
-          Clear All
-        </button>
-        <button onClick={copyText} className="btn btn-copy" type="button">
-          Copy Text
-        </button>
-      </div>
+      <Footer 
+        charCount={content.length}
+        keyCount={stats.keys}
+        pasteCount={stats.pastes}
+      />
+
+      <HistorySidebar 
+        isOpen={showHistory}
+        onClose={() => setShowHistory(false)}
+        sessions={sessions}
+        currentSessionId={currentSessionId}
+        onLoadSession={loadSession}
+        onDeleteSession={deleteSession}
+        onAnalyzeSession={setAnalyzingSession}
+      />
+
+      <AnalysisModal 
+        session={analyzingSession}
+        onClose={() => setAnalyzingSession(null)}
+      />
     </div>
   );
 }
-
-export default App;

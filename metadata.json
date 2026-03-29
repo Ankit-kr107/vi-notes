@@ -1,0 +1,5 @@
+{
+  "name": "Vi-Note",
+  "description": "A distraction-free writing editor that captures typing dynamics and session metadata.",
+  "requestFramePermissions": []
+}
